@@ -9,8 +9,8 @@ test_string = """
 
 (judge 1 Int)
 
-(judge a Str)
-(define a 'Hello)
+(judge a Int)
+(define a 2)
 
 -- (+ a 1)
 
@@ -41,6 +41,10 @@ test_string = """
 (defun (fib x) ( if (<= x 1) 1 (+ (fib (- x 1)) (fib (- x 2)))))
 (judge fib (-> Int Int))
 (fib 9)
+
+(define x (fib 4))
+(+ x 1)
+(judge (fib 2) Int)
 
 
 
@@ -347,7 +351,7 @@ class Name(Expression):
         self.name = name
 
     def evaluate(self, env: Env) -> Tuple[Optional[Expression], Env]:
-        return (env.get(self.name), env)
+        return env.get(self.name).evaluate(env)
 
     def inferType(self, env: Env, prefix: str) -> Optional[Expression]:
         print(f"{prefix}{self}.inferType")
@@ -519,15 +523,18 @@ class Call(Expression):
 
         # Check return type
         return_type = call_types.pop()
+        print(f"{prefix} + checking that return type {return_type} is {annotatedType}")
         if return_type != annotatedType:
             print(f"{prefix} + return type {return_type} doesn't match expected type")
             return False
+        print(f"{prefix} + ok")
 
         # Check the arguments
         for arg_expr, arg_type in zip(self.args, call_types):
             print(f"{prefix} + checking arg {arg_expr} with type {arg_type}")
             if not arg_expr.checkType(arg_type, env, prefix = prefix + PREFIX_INC):
                 return False
+            print(f"{prefix} + ok")
 
         return True
 
@@ -586,10 +593,11 @@ class Judgement(Expression):
 
             raise Exception(f"Judgement {self} didn't pan out")
 
-        if not self.expr.checkType(evaluatedType, env, prefix = "  "):
+        if self.expr.checkType(evaluatedType, env, prefix = "  "):
             print(f"Judgement {self} checked out!!")
             return True
-            raise Exception(f"Judgement {self} didn't pan out")
+
+        raise Exception(f"Judgement {self} didn't pan out")
 
 
     def __str__(self):
