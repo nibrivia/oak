@@ -1,0 +1,19 @@
+<html lang="en">
+
+<head>
+    <script src="https://unpkg.com/htmx.org@1.9.8"></script>
+    <title>Oak</title>
+</head>
+
+<body>
+    <div>
+        <div id="result">
+        </div>
+        <form hx-put="/put" hx-on::after-request="this.reset()" hx-target="#result" hx-swap="beforeend">
+            <input id="title" name="title" type="text">
+            <button type="submit">Submit</button>
+        </form>
+    </div>
+</body>
+
+</html>
