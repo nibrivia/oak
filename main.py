@@ -21,9 +21,17 @@ test_string = """
 (judge b (-> Int))
 
 
-(judge id (-> Int Int))
-(defun (id x) x)
-(id 4)
+(define t Type)
+(judge t Type)
+
+(defun (idGen t)
+ (lambda (x) x)
+)
+
+(define idInt (idGen Int))
+
+-- (judge (idGen Int) (-> Int Int))
+(idInt 5)
 
 
 (judge sum Int)
@@ -62,6 +70,63 @@ test_string = """
 """
 
 _ = """
+(judge idT (-> Type Type))
+(defun (idT t) (-> t t))
+
+(judge idGen (lambda (t) (-> t t)))
+(defun (idGen t)
+  (let
+     ((judgement (judge idT (-> t t)))
+      (idT (lambda (x) x))
+     )
+     idT
+  )
+)
+
+
+
+(defun (id x:t:Type) x)
+
+id:: t:Type -> Type
+id: x:t -> t
+id x = x
+
+concat:: t:Type -> n:Int -> m:Int -> Type
+concat: List t n -> List t m -> List t (n+m)
+concat xs ys = xs ++ ys
+
+
+id x:t:Type -> t =
+    x
+
+concat xs:(List t) ys:(List t) -> (List t) = xs ++ ys
+with
+    let
+        n = List.len(xs)
+        m = List.len(ys)
+    in
+    List.length (concat xs ys) == n + m
+
+add: Units -> Units -> Units
+add a b = Units.add a b
+with
+    dimensions a == dimensions b
+    dimensions a == dimensions (add a b)
+
+mul: Units -> Units -> Units
+mul a b = Units.mul a b
+with
+    dimensions (mul a b) == (Dimensions.add (dimensions a) (dimensions b))
+
+trueIntFalseStr: bool -> (Int|Str)
+trueIntFalseStr cond = ...
+with
+    if cond
+        judge (trueIntFalseBool cond) Int
+    else
+        judge (trueIntFalseBool cond) Str
+
+
 (judge Bool Type)
 (define Bool 
     (oneOf
@@ -78,7 +143,7 @@ _ = """
      )
  )
 """
-            
+
 
 list_string = """
 List: Type -> Type
@@ -90,8 +155,8 @@ List t =
 
 
 class Env:
-    def __init__(self, parent = None, bindings = {}):
-        self.bindings = {k:v for k, v in bindings.items()}
+    def __init__(self, parent=None, bindings={}):
+        self.bindings = {k: v for k, v in bindings.items()}
         self.judgements = {}
         self.deferedJudgements = {}
         self.parent = parent
@@ -105,7 +170,7 @@ class Env:
 
         raise Exception(f"Name '{name}' not found at the root env")
 
-    def set(self, name:str, value) -> None:
+    def set(self, name: str, value) -> None:
         if name in self.deferedJudgements:
             self.check_judgement(name, value)
 
@@ -114,7 +179,7 @@ class Env:
 
         self.bindings[name] = value
 
-    def has(self, name:str) -> bool:
+    def has(self, name: str) -> bool:
         if name in self.bindings:
             return True
 
@@ -124,27 +189,31 @@ class Env:
         return False
 
     def set_judgement(self, name: str, judgement):
-        assert isinstance(judgement, Judgement), f"{judgement} is not a Judgement"
+        assert isinstance(
+            judgement, Judgement), f"{judgement} is not a Judgement"
         if name in self.judgements:
             # TODO allow multiple judgements?
             raise Exception(f"{name} already has a judgement")
 
         self.judgements[name] = judgement
 
-    def defer_judgement(self, name:str, judgement):
-        assert isinstance(judgement, Judgement), f"{judgement} is not a Judgement"
+    def defer_judgement(self, name: str, judgement):
+        assert isinstance(
+            judgement, Judgement), f"{judgement} is not a Judgement"
         if self.has(name):
-            raise Exception(f"Attempt to defer judgement on existing binding {name}")
+            raise Exception(
+                f"Attempt to defer judgement on existing binding {name}")
 
         if self.get_judgement(name) is not None:
-            raise Exception(f"(Attempt to defer judgement on a name with an existing judgement: {name}")
+            raise Exception(
+                f"(Attempt to defer judgement on a name with an existing judgement: {name}")
 
         if name in self.deferedJudgements is not None:
-            raise Exception(f"(Attempt to defer judgement on a name with an existing defered judgement: {name}")
+            raise Exception(
+                f"(Attempt to defer judgement on a name with an existing defered judgement: {name}")
 
         print(f"Defering judgement of {name}")
         self.deferedJudgements[name] = judgement
-
 
     def get_judgement(self, name: str):
         if name in self.judgements:
@@ -153,15 +222,16 @@ class Env:
         if self.parent is not None:
             return self.parent.get_judgement(name)
 
-    def get_defJudgement(self, name:str):
+    def get_defJudgement(self, name: str):
         if name in self.deferedJudgements:
             return self.deferedJudgements[name]
-        
+
         if self.parent is not None:
             return self.parent.get_defJudgement(name)
 
     def set_axiom(self, name, judgement):
-        assert isinstance(judgement, Judgement), f"{judgement} is not a Judgement"
+        assert isinstance(
+            judgement, Judgement), f"{judgement} is not a Judgement"
         self.judgements[name] = judgement
 
     def check_judgement(self, name: str, value) -> None:
@@ -172,38 +242,46 @@ class Env:
         defered_judgement = self.get_defJudgement(name)
 
         if not defered_judgement.verify(childEnv):
-            raise Exception(f"Defered judgement for @{name} does not check out")
+            raise Exception(
+                f"Defered judgement for @{name} does not check out")
 
         self.judgements[name] = defered_judgement
 
     def makeChild(self):
-        child = Env(parent = self)
+        child = Env(parent=self)
         return child
-
 
 
 def mul(x, y):
     return Value(x.value * y.value)
 
+
 def add(x, y):
     return Value(x.value + y.value)
+
 
 def sub(x, y):
     return Value(x.value - y.value)
 
+
 def lte(x, y):
     return Value(x.value <= y.value)
+
 
 def lt(x, y):
     return Value(x.value < y.value)
 
+
 def eq(x, y):
     return Value(x.value == y.value)
+
 
 def arrow_type(*types):
     return Value(list(types))
 
+
 PREFIX_INC = " |   "
+
 
 class Expression:
     def __init__(self):
@@ -212,25 +290,24 @@ class Expression:
     def inferType(self, env: Env, prefix: str) -> Optional[Self]:
         return self.annotation
 
-
     def evaluate(self, env: Env) -> Tuple[Optional[Self], Env]:
-        raise NotImplemented()
+        raise NotImplementedError()
 
-    def checkType(self, annotatedType: Self, env:Env, prefix: str) -> bool:
+    def checkType(self, annotatedType: Self, env: Env, prefix: str) -> bool:
         if self.annotation is not None and annotatedType == self.annotation:
             return True
 
         inferedType = self.inferType(env, prefix + PREFIX_INC)
         if inferedType is not None:
             self.annotation = inferedType
-            return self.checkType(annotatedType, env, prefix = prefix + PREFIX_INC)
+            return self.checkType(annotatedType, env, prefix=prefix + PREFIX_INC)
 
         # self.annotation = annotatedType
-        raise NotImplemented()
+        raise NotImplementedError()
 
 
 class Value(Expression):
-    def __init__(self, value, typ = None):
+    def __init__(self, value, typ=None):
         super().__init__()
 
         self.value = value
@@ -238,21 +315,26 @@ class Value(Expression):
         if isinstance(value, list):
             self.annotation = Value("Type")
             self.value = [Value(v) for v in value]
+            return
+
+        if isinstance(value, Value):
+            self.value = value.value
+            self.annotation = value.annotation
+            return
 
         if typ is not None:
             self.annotation = typ
         elif isinstance(value, bool):
-            self.annotation =  Value("Bool", Value("Type"))
+            self.annotation = Value("Bool", Value("Type"))
         elif isinstance(value, int):
-            self.annotation =  Value("Int", Value("Type"))
+            self.annotation = Value("Int", Value("Type"))
         elif isinstance(value, str):
             if value.startswith("'"):
-                self.annotation =  Value("Str", Value("Type"))
+                self.annotation = Value("Str", Value("Type"))
             if value == "Type":
                 self.annotation = self
             if value in ["Bool", "Str", "Int"]:
                 self.annotation = Value("Type")
-
 
     def evaluate(self, env: Env) -> Tuple[Optional[Expression], Env]:
         return (self, env)
@@ -265,7 +347,6 @@ class Value(Expression):
         type_check = self.annotation == annotatedType
         print(f"{prefix} +{self}.checkType {annotatedType} = {type_check}")
         return type_check
-        
 
     def __eq__(self, other: Self) -> bool:
         if isinstance(other, str):
@@ -319,12 +400,15 @@ class IfStatement(Expression):
 
     def checkType(self, annotatedType: Expression, env: Env, prefix: str) -> bool:
         print(f"{prefix}{self}.checkType {annotatedType}")
-        print(f"{prefix} + Starting with checking {self.condExpr} against type {Value('Bool')}")
+        print(
+            f"{prefix} + Starting with checking {self.condExpr} against type {Value('Bool')}")
 
-        assert self.condExpr.checkType(Value("Bool", "Type"), env, prefix = prefix + PREFIX_INC)
+        assert self.condExpr.checkType(
+            Value("Bool", "Type"), env, prefix=prefix + PREFIX_INC)
 
         print(f"{prefix} + checking the true branch...")
-        true_match = self.trueExpr.checkType(annotatedType, env, prefix = prefix + PREFIX_INC) 
+        true_match = self.trueExpr.checkType(
+            annotatedType, env, prefix=prefix + PREFIX_INC)
         if not true_match:
             print(f"{prefix} + checkType is False on the true branch")
             return False
@@ -332,7 +416,8 @@ class IfStatement(Expression):
             print(f"{prefix} + ok")
 
         print(f"{prefix} + checking the false branch...")
-        false_match = self.falseExpr.checkType(annotatedType, env, prefix = prefix + PREFIX_INC)
+        false_match = self.falseExpr.checkType(
+            annotatedType, env, prefix=prefix + PREFIX_INC)
         if not false_match:
             print(f"{prefix} + checkType is False on the false branch")
             return False
@@ -345,6 +430,7 @@ class IfStatement(Expression):
     def __str__(self) -> str:
         return f"(if {self.condExpr} {self.trueExpr} {self.falseExpr})"
 
+
 class Name(Expression):
     def __init__(self, name: str):
         super().__init__()
@@ -353,26 +439,30 @@ class Name(Expression):
     def evaluate(self, env: Env) -> Tuple[Optional[Expression], Env]:
         return env.get(self.name).evaluate(env)
 
-    def inferType(self, env: Env, prefix: str) -> Optional[Expression]:
+    def inferType(self, env: Env, prefix: str) -> Expression:
         print(f"{prefix}{self}.inferType")
         existingType = self.annotation
         if existingType is not None:
+            print(f"{prefix} +.. returning existing judgement {self.annotation}")
             return existingType
 
         existingJudgement = env.get_judgement(self.name)
         if existingJudgement is not None:
             self.annotation = existingJudgement.judgement
-            print(f"{prefix} +{self}.inferType returning existing judgement {self.annotation}")
+            print(f"{prefix} +.. returning existing judgement {self.annotation}")
             return self.annotation
 
-        (val, _) = self.evaluate(env)
+        val = env.get(self.name)
         if val is None:
             raise Exception("Can't infer type of unbound variable")
-        return val.inferType(env, prefix = prefix + PREFIX_INC)
+        print(f"{prefix} +.. can't figure out type, defering to {val}")
+        return val.inferType(env, prefix=prefix + PREFIX_INC)
 
     def checkType(self, annotatedType: Expression, env: Env, prefix: str) -> bool:
         print(f"{prefix}{self}.checkType {annotatedType}")
-        (inferedType, _) = self.inferType(env, prefix = prefix + PREFIX_INC).evaluate(env)
+        (inferedType, _) = self.inferType(
+            env, prefix=prefix + PREFIX_INC).evaluate(env)
+
         if inferedType is not None:
             print(f"{prefix} +{self}.checkType.. infered {inferedType}")
             type_match = inferedType == annotatedType
@@ -384,7 +474,7 @@ class Name(Expression):
         if val is None:
             raise Exception("No value found for {self} during type checking")
 
-        return val.checkType(annotatedType, env, prefix = prefix + PREFIX_INC)
+        return val.checkType(annotatedType, env, prefix=prefix + PREFIX_INC)
 
     def __str__(self) -> str:
         return f"@{self.name}"
@@ -405,14 +495,12 @@ class Define(Expression):
         return f"(define {self.name} {self.expr})"
 
 
-
 class Lambda(Expression):
     def __init__(self, args: List[str], body: Expression):
         super().__init__()
 
         self.args = args
         self.body = body
-
 
     def evaluate(self, env: Env) -> Tuple[Optional[Expression], Env]:
         self.captured_env = env
@@ -430,7 +518,8 @@ class Lambda(Expression):
     def inferType(self, env: Env, prefix: str) -> Optional[Expression]:
         print(f"{prefix}{self}.inferType")
         if len(self.args) == 0:
-            inferedType = Value([self.body.inferType(env, prefix = prefix + PREFIX_INC)])
+            inferedType = Value(
+                [self.body.inferType(env, prefix=prefix + PREFIX_INC)])
             print(f"{prefix} +{self}.inferType = {inferedType}")
             return inferedType
 
@@ -443,20 +532,22 @@ class Lambda(Expression):
         returnType = types.pop()
 
         for (argName, argType) in zip(self.args, types):
-            print(f"{prefix} +{self}.checkType..  setting child axiom on {argName} of {argType}")
-            childEnv.set_axiom(argName, Judgement(expr = Name(argName), typ = argType))
+            print(
+                f"{prefix} +{self}.checkType..  setting child axiom on {argName} of {argType}")
+            childEnv.set_axiom(argName, Judgement(
+                expr=Name(argName), typ=argType))
 
-        print(f"{prefix} +{self}.checkType..  checking body returns {returnType} given axioms")
-        body_check = self.body.checkType(returnType, childEnv, prefix = prefix + PREFIX_INC)
+        print(
+            f"{prefix} +{self}.checkType..  checking body returns {returnType} given axioms")
+        body_check = self.body.checkType(
+            returnType, childEnv, prefix=prefix + PREFIX_INC)
         print(f"{prefix} +{self}.checkType..  {body_check}")
 
         return body_check
 
-        # return self.inferType(env) == annotatedType
-
-
     def __str__(self) -> str:
         return f"(lambda ({' '.join(self.args)}) {self.body})"
+
 
 class Call(Expression):
     def __init__(self, fnExpr: Expression, args: List[Expression]):
@@ -465,24 +556,24 @@ class Call(Expression):
 
         super().__init__()
 
-    def evaluate(self, env:Env) -> Tuple[Optional[Expression], Env]:
+    def evaluate(self, env: Env) -> Tuple[Optional[Expression], Env]:
         fn = self.fnExpr
         while not isinstance(fn, Value):
             (fn, _) = fn.evaluate(env.makeChild())
             assert fn is not None, f"In {self}, the function resolved to None"
 
         assert isinstance(fn, Value), f"Attempt to call non-value {fn}"
-        assert callable(fn.value), f"Although call is a value, it's not a function: {fn}"
+        assert callable(
+            fn.value), f"Although call is a value, it's not a function: {fn}"
 
         evaluatedArgs = [a.evaluate(env.makeChild())[0] for a in self.args]
         return (fn.value(*evaluatedArgs), env)
 
-    def inferType(self, env:Env, prefix: str) -> Optional[Expression]:
+    def inferType(self, env: Env, prefix: str) -> Optional[Expression]:
         print(f"{prefix}{self}.inferType")
 
-
         print(f"{prefix} + infering function type..")
-        fn_type = self.fnExpr.inferType(env, prefix = prefix + PREFIX_INC)
+        fn_type = self.fnExpr.inferType(env, prefix=prefix + PREFIX_INC)
         if fn_type is None:
             return None
         (fn_type, _) = fn_type.evaluate(env)
@@ -492,22 +583,17 @@ class Call(Expression):
 
         # Infer arg types from function
         print(f"{prefix} + infering argument types..")
-        argTypes = [arg.inferType(env, prefix = prefix + PREFIX_INC) for arg in self.args]
+        argTypes = [arg.inferType(env, prefix=prefix + PREFIX_INC)
+                    for arg in self.args]
         print(f"{prefix} + {' '.join(str(a) for a in argTypes)}")
 
         return fn_type.value.pop()
-
-        # Infer function type from args
-        fn_type = Value(argTypes + [annotatedType])
-        print(f"{prefix} + fn {self.fnExpr} must be {fn_type}")
-
-        return self.fnExpr.checkType(fn_type, env, prefix = prefix + PREFIX_INC)
 
     def checkType(self, annotatedType: Expression, env: Env, prefix: str) -> bool:
         print(f"{prefix}{self}.checkType {annotatedType}")
 
         print(f"{prefix} + looking at function call type..")
-        infered_type = self.fnExpr.inferType(env, prefix = prefix + PREFIX_INC)
+        infered_type = self.fnExpr.inferType(env, prefix=prefix + PREFIX_INC)
         assert infered_type is not None
         print(f"{prefix} + function is {infered_type}")
         (call_type, _) = infered_type.evaluate(env)
@@ -516,7 +602,6 @@ class Call(Expression):
         assert infered_type is not None
         if not isinstance(call_type, Value):
             print(f"{prefix} + call type {call_type} defies analysis")
-
 
         # Extract the function type
         call_types = call_type.value
@@ -532,28 +617,22 @@ class Call(Expression):
         # Check the arguments
         for arg_expr, arg_type in zip(self.args, call_types):
             print(f"{prefix} + checking arg {arg_expr} with type {arg_type}")
-            if not arg_expr.checkType(arg_type, env, prefix = prefix + PREFIX_INC):
+            if not arg_expr.checkType(arg_type, env, prefix=prefix + PREFIX_INC):
                 return False
             print(f"{prefix} + ok")
 
         return True
 
-        
-
-
-
-
-        
-
     def __str__(self):
         return f"({self.fnExpr} {' '.join(str(a) for a in self.args)})"
+
 
 class Judgement(Expression):
     def __init__(self, expr: Expression, typ: Expression):
         self.expr = expr
         self.judgement = typ
 
-    def evaluate(self, env:Env) -> Tuple[Expression, Env]:
+    def evaluate(self, env: Env) -> Tuple[Expression, Env]:
 
         if isinstance(self.expr, Name):
             name = self.expr.name
@@ -568,11 +647,9 @@ class Judgement(Expression):
             env.set_judgement(name, self)
             return (Value(True), env)
 
-
-
         return (Value(self.verify(env)), env)
 
-    def verify(self, env:Env) -> bool:
+    def verify(self, env: Env) -> bool:
         print(f"Verifying {self.expr} with judgement {self.judgement}")
         print()
 
@@ -588,45 +665,47 @@ class Judgement(Expression):
             print(f"  Add self-referential axiom on {self.expr}")
             childEnv.set_axiom(self.expr.name, self)
 
-            if env.get(self.expr.name).checkType(evaluatedType, childEnv, prefix = "    "):
+            if env.get(self.expr.name).checkType(evaluatedType, childEnv, prefix="    "):
                 return True
 
             raise Exception(f"Judgement {self} didn't pan out")
 
-        if self.expr.checkType(evaluatedType, env, prefix = "  "):
+        if self.expr.checkType(evaluatedType, env, prefix="  "):
             print(f"Judgement {self} checked out!!")
             return True
 
         raise Exception(f"Judgement {self} didn't pan out")
 
-
     def __str__(self):
         return f"(judge {self.expr} {self.judgement})"
 
 
-
-
-
-default_env = Env(bindings = {
-    "+" : Value(add),
-    "-" : Value(sub),
-    "*" : Value(mul),
+default_env = Env(bindings={
+    "+": Value(add),
+    "-": Value(sub),
+    "*": Value(mul),
     "<=": Value(lte),
     "<": Value(lt),
     "=": Value(eq),
-    "Int": Value("Int", "Type"),
-    "Str": Value("Str", "Type"),
-    "Bool": Value("Bool", "Type"),
-    "Type": Value("Type", "Type"),
+    "Int": Value("Int"),
+    "Str": Value("Str"),
+    "Bool": Value("Bool"),
+    "Type": Value("Type"),
     "->": Value(arrow_type)
-    })
+})
 
-default_env.set_axiom("+", Judgement(Name("+"), Value(["Int", "Int", "Int"], "Type")))
-default_env.set_axiom("*", Judgement(Name("*"), Value(["Int", "Int", "Int"], "Type")))
-default_env.set_axiom("-", Judgement(Name("-"), Value(["Int", "Int", "Int"], "Type")))
-default_env.set_axiom("<=", Judgement(Name("<="), Value(["Int", "Int", "Bool"], "Type")))
-default_env.set_axiom("<", Judgement(Name("<"), Value(["Int", "Int", "Bool"], "Type")))
-default_env.set_axiom("=", Judgement(Name("="), Value(["Int", "Int", "Bool"], "Type")))
+default_env.set_axiom(
+    "+", Judgement(Name("+"), Value(["Int", "Int", "Int"], "Type")))
+default_env.set_axiom(
+    "*", Judgement(Name("*"), Value(["Int", "Int", "Int"], "Type")))
+default_env.set_axiom(
+    "-", Judgement(Name("-"), Value(["Int", "Int", "Int"], "Type")))
+default_env.set_axiom("<=", Judgement(
+    Name("<="), Value(["Int", "Int", "Bool"], "Type")))
+default_env.set_axiom("<", Judgement(
+    Name("<"), Value(["Int", "Int", "Bool"], "Type")))
+default_env.set_axiom("=", Judgement(
+    Name("="), Value(["Int", "Int", "Bool"], "Type")))
 default_env.set_axiom("Int", Judgement(Name("Int"), Value("Type")))
 default_env.set_axiom("Str", Judgement(Name("Str"), Value("Type")))
 default_env.set_axiom("Bool", Judgement(Name("Bool"), Value("Type")))
@@ -650,7 +729,7 @@ def tokensToExpression(tokens) -> Expression:
         [name_token, expr_tokens] = tokens
         expr_tokens = tokensToExpression(expr_tokens)
 
-        return Define(name = name_token, expr = expr_tokens)
+        return Define(name=name_token, expr=expr_tokens)
 
     if first_token == "lambda":
         [arg_tokens, body_tokens] = tokens
@@ -670,10 +749,9 @@ def tokensToExpression(tokens) -> Expression:
     if first_token == "defun":
         [[name, *argnames], body] = tokens
         body_expr = tokensToExpression(body)
-        return Define(name = name, expr = Lambda(args=argnames, body=body_expr))
+        return Define(name=name, expr=Lambda(args=argnames, body=body_expr))
 
     return Call(tokensToExpression(first_token), [tokensToExpression(t) for t in tokens])
-    
 
 
 def singleton(token: str) -> Expression:
@@ -693,6 +771,7 @@ def singleton(token: str) -> Expression:
         return token
 
     return Value(token)
+
 
 def makeNextExpression(tokens: List[str]):
     current_expr = []
@@ -724,12 +803,9 @@ def parse(code_string: str) -> List[Expression]:
 
     expressions = []
     for single_expr_tokens in exprs_str:
-        expr = tokensToExpression(single_expr_tokens) 
-
+        expr = tokensToExpression(single_expr_tokens)
         expressions.append(expr)
-    return  expressions
-
-
+    return expressions
 
 
 def main() -> None:
