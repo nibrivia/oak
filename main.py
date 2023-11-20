@@ -99,24 +99,40 @@ concat xs ys = xs ++ ys
 id x:t:Type -> t =
     x
 
-concat xs:(List t) ys:(List t) -> (List t) = xs ++ ys
+
+
+
+concat xs:(List t1) ys:(List t2) -> (List t) = xs ++ ys
 with
     let
         n = List.len(xs)
         m = List.len(ys)
     in
+    t1 == t2
     List.length (concat xs ys) == n + m
 
+
+
+
 add: Units -> Units -> Units
-add a b = Units.add a b
+add a b = Units.rawAdd a b
 with
     dimensions a == dimensions b
     dimensions a == dimensions (add a b)
+
+
+
+
 
 mul: Units -> Units -> Units
 mul a b = Units.mul a b
 with
     dimensions (mul a b) == (Dimensions.add (dimensions a) (dimensions b))
+
+
+
+
+
 
 trueIntFalseStr: bool -> (Int|Str)
 trueIntFalseStr cond = ...
@@ -125,6 +141,10 @@ with
         judge (trueIntFalseBool cond) Int
     else
         judge (trueIntFalseBool cond) Str
+
+
+
+
 
 
 (judge Bool Type)
