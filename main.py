@@ -148,7 +148,7 @@ with
 
 
 (judge Bool Type)
-(define Bool 
+(define Bool
     (oneOf
      (('True)
       ('False))))
@@ -827,6 +827,15 @@ def parse(code_string: str) -> List[Expression]:
         expressions.append(expr)
     return expressions
 
+def evalString(code_string: str) -> str:
+    env: Env = default_env
+    exprs = parse(code_string)
+    results = []
+    for expr in exprs:
+        (res, env) = expr.evaluate(env)
+        if res is not None:
+            results.append(str(res))
+    return "\n".join(results)
 
 def main() -> None:
     parsed: List[Expression] = parse(test_string)
@@ -849,7 +858,6 @@ def main() -> None:
             (res, env) = expr.evaluate(env)
             if res is not None:
                 print(res)
-
 
 if __name__ == "__main__":
     main()
