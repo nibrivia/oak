@@ -14,4 +14,4 @@ def clicked():
 @app.route('/put', methods=['PUT'])
 def post():
     title = request.form.get('title')
-    return f"<pre>{evalString(title)}</pre>"
+    return f"<div class='p-2'><pre class='font-bold'>> {title}</pre><pre>{evalString(title)}</pre></div>"

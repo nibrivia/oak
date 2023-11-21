@@ -1,17 +1,22 @@
 <html lang="en">
 
 <head>
-    <script src="https://unpkg.com/htmx.org@1.9.8"></script>
     <title>Oak</title>
+    <link rel="stylesheet" href="static/style.css">
+    <script src="https://unpkg.com/htmx.org@1.9.8"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.8"></script>
 </head>
-
 <body>
-    <div>
-        <div id="result">
-        </div>
-        <form hx-put="/put" hx-on::after-request="this.reset()" hx-target="#result" hx-swap="beforeend">
-            <input id="title" name="title" type="text">
-            <button type="submit">Submit</button>
+    <div class="mx-auto max-w-prose p-3">
+        <h1 class="text-2xl text-bold font-bold">Oak</h1>
+        <p class="leading-loose">A typed LISP</p>
+        <hr/>
+        <br/>
+        <div id="result"></div>
+        <form hx-put="/put" hx-on::after-request="this.reset()" hx-target="#result" hx-swap="beforeend" class="p-2">
+            <tt class="font-mono">> </tt>
+            <input id="title" name="title" class="font-mono bg-transparent border-none outline-none" type="text" autofocus placeholder="(+ 3 1)">
+            <input type="submit" hidden />
         </form>
     </div>
 </body>
