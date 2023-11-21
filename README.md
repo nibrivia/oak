@@ -1,4 +1,4 @@
 # oak
 A typed LISP
 
-<a href='http://www.recurse.com' title='Made with love at the Recurse Center'><img src='https://cloud.githubusercontent.com/assets/2883345/11325206/336ea5f4-9150-11e5-9e90-d86ad31993d8.png' height='20px'/></a>
+Made at [the Recurse Center](https://www.recurse.com/scout/click?t=2923690777cb854252b26e9468a08fbb).
