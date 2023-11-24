@@ -811,7 +811,7 @@ def makeNextExpression(tokens: List[str]):
 def parse(code_string: str) -> List[Expression]:
     special_chars = ["(", ")"]
 
-    lines = [l.split("--", 1)[0] for l in code_string.splitlines()]
+    lines = [l.split(";", 1)[0] for l in code_string.splitlines()]
 
     code_string = "\n".join(lines)
 
