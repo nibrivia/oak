@@ -1,5 +1,5 @@
 cabal-version:      2.4
-name:               oak-hs
+name:               oak
 version:            0.1.0.0
 
 -- A short (one-line) description of the package.
@@ -19,9 +19,11 @@ maintainer:         nibrivia@users.noreply.github.com
 -- A copyright notice.
 -- copyright:
 -- category:
-extra-source-files: CHANGELOG.md
+extra-source-files:
+    CHANGELOG.md
+    README.md
 
-executable oak-hs
+executable oak
     main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.
@@ -29,6 +31,6 @@ executable oak-hs
 
     -- LANGUAGE extensions used by modules in this package.
     -- other-extensions:
-    build-depends:    base ^>=4.16.4.0
+    build-depends:    base ^>=4.17.2.0
     hs-source-dirs:   app
     default-language: Haskell2010
