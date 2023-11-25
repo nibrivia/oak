@@ -5,6 +5,8 @@ test_string = """
 1
 'Hello
 
+(let ((a 1) (b 2)) (+ a b))
+
 (+ 1 2)
 
 (judge 1 Int)
@@ -12,7 +14,7 @@ test_string = """
 (judge a Int)
 (define a 2)
 
--- (+ a 1)
+;; (+ a 1)
 
 ((lambda (x) (+ x x)) 2)
 
@@ -30,7 +32,7 @@ test_string = """
 
 (define idInt (idGen Int))
 
--- (judge (idGen Int) (-> Int Int))
+;; (judge (idGen Int) (-> Int Int))
 (idInt 5)
 
 
@@ -59,13 +61,19 @@ test_string = """
 (square 2)
 (square a)
 
+(let
+    ((d 3)
+     (e 4))
+    (+ e d))
 
-(judge r2 (-> Int Int Int)))
-(define r2 (lambda (x y)
+(judge r2 (-> Int Int Int))
+(defun (r2 x y)
     (let
-        (((x2) (square x)))
-         ((+ x2 (square y)))
-     )))
+        ((x2 (square x)))
+         (+ x2 (square y))
+     ))
+
+(r2 3 4)
 
 """
 
@@ -326,6 +334,37 @@ class Expression:
         raise NotImplementedError()
 
 
+class Sequence(Expression):
+    def __init__(self, exprs: List[Expression]):
+        self.exprs = exprs
+
+    def evaluate(self, env: Env) -> Tuple[Optional[Expression], Env]:
+        childEnv = env.makeChild()
+        for expr in self.exprs:
+            (value, childEnv) = expr.evaluate(childEnv)
+
+        return (value, env)
+
+    def inferType(self, env: Env, prefix: str) -> Optional[Expression]:
+        print(f"{prefix}{self}.inferType")
+        # TODO infer types of all the expressions and add those to the env
+        return self.exprs[-1].inferType(env, prefix=prefix+PREFIX_INC)
+
+    def checkType(self, annotatedType: Expression, env: Env, prefix: str) -> bool:
+        print(f"{prefix}{self}.checkType {annotatedType}")
+
+        last_expr = self.exprs[-1]
+        return last_expr.checkType(annotatedType, env, prefix=prefix+PREFIX_INC)
+
+    def __str__(self) -> str:
+        newLine = "\n"
+        return f"(begin {' '.join([(newLine + '    ' + str(l)) for e in self.exprs for l in str(e).splitlines() ])} )"
+
+    def altstr(self) -> str:
+        newLine = "\n"
+        return f"let {' '.join([(newLine + '    ' + str(l)) for e in self.exprs[:-1] for l in e.altstr().splitlines() ])}{newLine}in{newLine}    {self.exprs[-1].altstr()}"
+
+
 class Value(Expression):
     def __init__(self, value, typ=None):
         super().__init__()
@@ -396,6 +435,9 @@ class Value(Expression):
             return f"{value_str} [{self.annotation}]"
         return str(value_str)
 
+    def altstr(self):
+        return str(self.value)
+
 
 class IfStatement(Expression):
     def __init__(self, condExpr: Expression, trueExpr: Expression, falseExpr: Expression):
@@ -450,6 +492,9 @@ class IfStatement(Expression):
     def __str__(self) -> str:
         return f"(if {self.condExpr} {self.trueExpr} {self.falseExpr})"
 
+    def altstr(self) -> str:
+        return f"if {self.condExpr.altstr()} then {self.trueExpr.altstr()} else {self.falseExpr.altstr()}"
+
 
 class Name(Expression):
     def __init__(self, name: str):
@@ -499,6 +544,9 @@ class Name(Expression):
     def __str__(self) -> str:
         return f"@{self.name}"
 
+    def altstr(self) -> str:
+        return f"{self.name}"
+
 
 class Define(Expression):
     def __init__(self, name: str, expr: Expression):
@@ -513,6 +561,9 @@ class Define(Expression):
 
     def __str__(self) -> str:
         return f"(define {self.name} {self.expr})"
+
+    def altstr(self) -> str:
+        return f"{self.name} = {self.expr.altstr()}"
 
 
 class Lambda(Expression):
@@ -567,6 +618,9 @@ class Lambda(Expression):
 
     def __str__(self) -> str:
         return f"(lambda ({' '.join(self.args)}) {self.body})"
+
+    def altstr(self) -> str:
+        return f"(\\{' '.join(self.args)} -> {self.body.altstr()})"
 
 
 class Call(Expression):
@@ -643,8 +697,13 @@ class Call(Expression):
 
         return True
 
-    def __str__(self):
+    def __str__(self) -> str:
         return f"({self.fnExpr} {' '.join(str(a) for a in self.args)})"
+
+    def altstr(self) -> str:
+        if isinstance(self.fnExpr, Name) and default_env.has(self.fnExpr.name) and len(self.args) == 2:
+            return f"{self.args[0].altstr()} {self.fnExpr.name} {self.args[1].altstr()}"
+        return f"{self.fnExpr.altstr()} {' '.join(a.altstr() for a in self.args)}"
 
 
 class Judgement(Expression):
@@ -698,6 +757,9 @@ class Judgement(Expression):
 
     def __str__(self):
         return f"(judge {self.expr} {self.judgement})"
+
+    def altstr(self):
+        return f"{self.expr.altstr()} : {self.judgement.altstr()}"
 
 
 default_env = Env(bindings={
@@ -771,6 +833,13 @@ def tokensToExpression(tokens) -> Expression:
         body_expr = tokensToExpression(body)
         return Define(name=name, expr=Lambda(args=argnames, body=body_expr))
 
+    if first_token == "let":
+        [[*local_bindings], body_tokens] = tokens
+        body_expr = tokensToExpression(body_tokens)
+        definitions = [Define(name=name, expr=tokensToExpression(value))
+                       for name, value in local_bindings]
+        return Sequence([*definitions, body_expr])
+
     return Call(tokensToExpression(first_token), [tokensToExpression(t) for t in tokens])
 
 
@@ -808,7 +877,7 @@ def makeNextExpression(tokens: List[str]):
     return (current_expr, tokens)
 
 
-def parse(code_string: str) -> List[Expression]:
+def parse(code_string: str) -> Expression:
     special_chars = ["(", ")"]
 
     lines = [l.split(";", 1)[0] for l in code_string.splitlines()]
@@ -825,7 +894,9 @@ def parse(code_string: str) -> List[Expression]:
     for single_expr_tokens in exprs_str:
         expr = tokensToExpression(single_expr_tokens)
         expressions.append(expr)
-    return expressions
+    if len(expressions) > 1:
+        return Sequence(expressions)
+    return expressions[0]
 
 
 def evalString(code_string: str, env: Env) -> (str, Env):
@@ -841,26 +912,25 @@ def evalString(code_string: str, env: Env) -> (str, Env):
 
 
 def main() -> None:
-    parsed: List[Expression] = parse(test_string)
+    expr: List[Expression] = parse(test_string)
     env: Env = default_env
 
-    for expr in parsed:
-        print(f"> {expr}")
-        (res, env) = expr.evaluate(env)
-        if res is not None:
-            print(res)
-        print()
+    print(f"> {expr}")
+    (res, env) = expr.evaluate(env)
+    if res is not None:
+        print(res)
 
-    while True:
+    print(expr)
+
+    while False:
         entry = input("> ")
         if entry == "exit":
             break
 
-        exprs = parse(entry)
-        for expr in exprs:
-            (res, env) = expr.evaluate(env)
-            if res is not None:
-                print(res)
+        expr = parse(entry)
+        (res, env) = expr.evaluate(env)
+        if res is not None:
+            print(res)
 
 
 if __name__ == "__main__":
