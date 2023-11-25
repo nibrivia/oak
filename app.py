@@ -54,7 +54,19 @@ def full_page_template():
     return resp
 
 
-@app.route('/put', methods=['PUT', 'OPTIONS'])
+@app.route("/embed")
+def embed_template():
+    session_name = uuid.uuid4().hex
+    resp = make_response(render_template(
+        'embed.html', session_name=session_name))
+    resp.set_cookie('session', session_name)
+
+    session_registry[session_name] = default_env
+
+    return resp
+
+
+@app.route('/exec', methods=['PUT', 'OPTIONS'])
 def post():
     if request.method == "OPTIONS":
         response = make_response()
@@ -63,7 +75,8 @@ def post():
         response.headers.add('Access-Control-Allow-Methods', "*")
         return response
 
-    session_name = request.cookies.get('session')
+    session_name = request.cookies.get(
+        'session') or request.form.get('session')
 
     env = session_registry[session_name]
     command = request.form.get('title') or ""

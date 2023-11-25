@@ -1,0 +1,9 @@
+<div>
+    <div id="result"></div>
+    <form hx-put="/exec" hx-on::after-request="this.reset()" hx-target="#result" hx-swap="beforeend" class="p-2 flex">
+        <label for="title" class="font-mono pr-2">></label>
+        <input id="title" name="title" class="font-mono border-none bg-transparent outline-none flex-grow" type="text" autofocus placeholder="(+ 3 1)" autocomplete="off">
+        <input id="session" name="session" value="{{ session_name }}" hidden />
+        <input type="submit" hidden />
+    </form>
+</div>
