@@ -1,0 +1,21 @@
+(define a 1)
+(type a)
+
+(define b 2)
+(+ a b)
+
+(== (type a) Int)
+(== (type a) (type b))
+
+(defun (fib x) (if (< x 1) 1 (+ (fib (- x 1)) (fib (- x 2)))))
+(fib 7)
+
+(== (type (fib 3)) Int)
+(== (type fib) (-> Int Int))
+
+(deftype Dual (dual Int Int))
+(define dual (Type (dual Int Int)))
+
+(defun (intToDual i) (dual i 1))
+(== (type intToDual) (-> Int Dual))
+
