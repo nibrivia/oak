@@ -9,19 +9,35 @@ import Text.ParserCombinators.Parsec
 
 -- | Expressions evaluate to something tangible
 data Expression
-  = ONumber Int
+  = -- concrete value
+    ENumber Int
   | OString String
   | OBool Bool
-  | Lambda [String] Env Expression
-  | Type Expression
-  | TypeFun Expression Expression
-  | TypeOr [Expression]
-  | Quote Expression
-  | Name String
   | IfElse Expression Expression Expression
+  | -- Types are first-class values
+    EType OType
+  | -- Runtime errors... to eventually be removed?
+    Error String
+  | -- Expression captures
+    Quote Expression
+  | -- Functions
+    Lambda [String] Env Expression
   | Call Expression [Expression]
-  | Error String
-  | Let [Binding] Expression
+  | -- names
+    Let [Binding] Expression
+  | Name String
+  deriving (Show, Eq)
+
+data OType
+  = TNum
+  | TStr
+  | TBool
+  | TFunction OType OType
+  | TType -- is of type: Type
+  | TAny -- can litarally be anything
+  | AnyOf OType OType
+  | AllOf OType OType
+  | TExpression
   deriving (Show, Eq)
 
 -- | Bindings only modify the environment
@@ -91,18 +107,18 @@ defaultEnv :: Env
 defaultEnv = Env Map.empty Map.empty EmptyEnv
 
 toBuiltinNum :: Expression -> Int
-toBuiltinNum (ONumber n) = n
+toBuiltinNum (ENumber n) = n
 
 toBuiltinBool :: Expression -> Bool
 toBuiltinBool (OBool b) = b
 
 toBuiltinStr :: Expression -> String
-toBuiltinStr (OString s) = s
+toBuiltinStr (ENumber s) = s
 
 evalBinaryNum :: Env -> (Int -> Int -> Expression) -> Expression -> Expression -> Expression
 evalBinaryNum env fn arg1 arg2 =
   let isNumber expr = case expr of
-        ONumber _ -> True
+        ENumber _ -> True
         _ -> False
 
       varg1 = valuate env arg1
@@ -118,7 +134,7 @@ zipFresh (a : as) (b : bs) =
   let (futurePairs, leftovers) = zipFresh as bs
    in ((a, b) : futurePairs, leftovers)
 
--- >>> valuate defaultEnv (Value (ONumber 2))
+-- >>> valuate defaultEnv (Value (ENumber 2))
 --
 eval :: Env -> Expression -> (Env, Expression)
 eval env expr =
@@ -139,17 +155,17 @@ eval env expr =
               (Name "<", [arg1, arg2]) -> evalBinaryNum env (\a b -> OBool (a < b)) arg1 arg2
               (Name "<=", [arg1, arg2]) -> evalBinaryNum env (\a b -> OBool (a <= b)) arg1 arg2
               (Name "=", [arg1, arg2]) -> evalBinaryNum env (\a b -> OBool (a == b)) arg1 arg2
-              (Name "-", [arg1, arg2]) -> evalBinaryNum env (\a b -> ONumber (a - b)) arg1 arg2
-              (Name "+", [arg1, arg2]) -> evalBinaryNum env (\a b -> ONumber (a + b)) arg1 arg2
-              (Name "*", [arg1, arg2]) -> evalBinaryNum env (\a b -> ONumber (a * b)) arg1 arg2
+              (Name "-", [arg1, arg2]) -> evalBinaryNum env (\a b -> ENumber (a - b)) arg1 arg2
+              (Name "+", [arg1, arg2]) -> evalBinaryNum env (\a b -> ENumber (a + b)) arg1 arg2
+              (Name "*", [arg1, arg2]) -> evalBinaryNum env (\a b -> ENumber (a * b)) arg1 arg2
               (Name "inferType", [Quote x]) -> inferType env x
               (Lambda [] lenv body, []) -> valuate (setRootParent (lenv & debugPipe "lenv") env & debugPipe "lenvRooted") (body & debugPipe "evaluating body")
               (Lambda [] lenv body, args) -> valuate env (Call (valuate (setRootParent lenv env) body) args) & debugPipe "weird call"
               (l@(Lambda {}), []) -> l & debugPipe "evaluating lambda, ran out of args"
               (Lambda (n : argNames) lenv body, a : args) ->
                 valuate env (Call (Lambda argNames lenv (Let [BindValue n (valuate env a)] body)) args)
-              (Type _, args) -> Error "Can't call a type"
-              (ONumber _, args) -> Error "Can't call a number"
+              (EType _, args) -> Error "Can't call a type"
+              (ENumber _, args) -> Error "Can't call a number"
               _ -> valuate env (Call (valuate env fnExpr) args)
           )
         (Let [] e) -> eval env e
@@ -175,35 +191,35 @@ valuate env expr = value
     (_, value) = eval env expr
 
 numType :: Expression
-numType = Type (OString "Num")
+numType = Type TNum
 
 boolType :: Expression
-boolType = Type (OString "Bool")
+boolType = Type TBool
 
 typeType :: Expression
-typeType = Type (OString "Type")
+typeType = Type TType
 
 anyType :: Expression
-anyType = Type (OString "Any")
+anyType = Type TAny
 
-isSubset :: Expression -> Expression -> Expression
-(Type t) `isSubset` (Type (OString "Any")) = OBool True
-(TypeFun _ _) `isSubset` (Type (OString "Any")) = OBool True
-(Type t) `isSubset` (Type u) =
+isSubset :: OType -> OType -> Expression
+(EType t) `isSubset` (EType (ENumber "Any")) = OBool True
+(TFunction _ _) `isSubset` (EType (ENumber "Any")) = OBool True
+(EType t) `isSubset` (EType u) =
   if u == typeType || u == anyType
     then OBool True
     else OBool ((t == u) & debugPipe " !!!! Manual type checking")
 t `isSubset` u = Error "Can't check if nontypes are subsets"
 
 isInstanceOf :: Env -> Expression -> Expression -> Expression
-isInstanceOf env expr typ@(Type (OString "Any")) = OBool True
-isInstanceOf env expr typ@(Type _) = inferType env expr `isSubset` typ
+isInstanceOf env expr typ@(EType (ENumber "Any")) = OBool True
+isInstanceOf env expr typ@(EType _) = inferType env expr `isSubset` typ
 isInstanceOf _ _ _ = Error "Can't check if value is subset of non-type"
 
 -- | >>> callReduction (TypeFun numType numType) [numType] == numType
-callReduction :: Env -> Expression -> [Expression] -> Expression
+callReduction :: Env -> OType -> [Expression] -> Expression
 callReduction _ funType [] = funType
-callReduction env (TypeFun t ts) (a : rgs) =
+callReduction env (TFunction t ts) (a : rgs) =
   if isInstanceOf env a t == OBool True
     then callReduction env ts rgs -- TODO argument binding
     else Error "Infertype: wrong argument type"
@@ -216,23 +232,21 @@ checkType :: Env -> Expression -> Expression -> (Env, Expression)
 checkType env expr typ = (env, OBool True)
 
 toFunType :: [Expression] -> Expression
-toFunType = foldr TypeFun anyType
+toFunType = foldr (Type (TypeFun anyType))
 
 inferType :: Env -> Expression -> Expression
 inferType env expr =
   case expr & debugPipe "inferType" of
-    ONumber _ -> numType
-    OString _ -> Type (OString "String")
+    ENumber _ -> numType
+    ENumber _ -> Type (ENumber "String")
     OBool _ -> boolType
     Type _ -> typeType
-    TypeFun {} -> typeType
-    TypeOr {} -> typeType
     Name "-" -> TypeFun numType (TypeFun numType numType)
     Name "+" -> TypeFun numType (TypeFun numType numType)
     Name "<=" -> TypeFun numType (TypeFun numType boolType)
     Name ">=" -> TypeFun numType (TypeFun numType boolType)
     Name "=" -> TypeFun numType (TypeFun numType boolType)
-    Name "inferType" -> TypeFun (Type (OString "Quote")) typeType
+    Name "inferType" -> TypeFun (Type (ENumber "Quote")) typeType
     Name n -> case envTypeLookup env n of
       Just t -> t
       Nothing -> envLookup env n & inferType env
@@ -272,26 +286,26 @@ main =
                   ["x"]
                   EmptyEnv
                   ( IfElse
-                      (Call (Name "<=") [Name "x", ONumber 1])
-                      (ONumber 1)
+                      (Call (Name "<=") [Name "x", ENumber 1])
+                      (ENumber 1)
                       ( Call
                           (Name "+")
-                          [ Call (Name "fib") [Call (Name "-") [Name "x", ONumber 1]],
-                            Call (Name "fib") [Call (Name "-") [Name "x", ONumber 2]]
+                          [ Call (Name "fib") [Call (Name "-") [Name "x", ENumber 1]],
+                            Call (Name "fib") [Call (Name "-") [Name "x", ENumber 2]]
                           ]
                       )
                   )
               ),
-            BindValue "y" (ONumber 3),
-            BindValue "a" (Call (Name "+") [Name "y", ONumber 4])
+            BindValue "y" (ENumber 3),
+            BindValue "a" (Call (Name "+") [Name "y", ENumber 4])
           ]
           -- (Name "myType")
           -- (Name "x")
           -- (Name "a")
           -- (Name "fib")
           -- (Name "add")
-          (Call (Name "add") [ONumber 2])
-      -- (Call (Call (Name "add") [ONumber 2]) [ONumber 3])
+          (Call (Name "add") [ENumber 2])
+      -- (Call (Call (Name "add") [ENumber 2]) [ONumber 3])
       -- (Call (Name "inferType") [Quote (Name "fib")])
       -- (Call (Name "fib") [Name "a"])
 
