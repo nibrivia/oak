@@ -256,15 +256,15 @@ valuate :: OExpression -> OEnv -> Computation OExpression
 valuate expr env =
   do
     let (_, res) = compute env (eval expr)
-    return (res & debugPipe "valuate res")
+    return res
 
 eval :: OExpression -> Computation OExpression
 eval expr =
-  case expr & debugPipe "expr" of
+  case expr of
     IfElse condExpr trueExpr falseExpr ->
       do
         condValue <- eval condExpr
-        case condValue & debugPipe ("eval condValue " ++ show condExpr ++ " ") of
+        case condValue of
           (EBool True) -> eval trueExpr
           (EBool False) -> eval falseExpr
           _ -> return (RuntimeError (show condValue ++ " isn't a boolean"))
@@ -280,7 +280,7 @@ eval expr =
         eval expr
     Call (Lambda largs lenv lbody) args ->
       do
-        let (bindings, (rlargs, rargs)) = zipAll (largs, args) & debugPipe "lambda zip res"
+        let (bindings, (rlargs, rargs)) = zipAll (largs, args)
         values <-
           foldM
             ( \res (n, a) -> do
@@ -294,8 +294,8 @@ eval expr =
                 (makeChildEnv lenv)
                 (foldM_ (\_ (n, x) -> evalBinding (BindValue n x)) () values)
         case (rlargs, rargs) of
-          ([], []) -> valuate lbody newEnv & trace "default"
-          (rlargs, []) -> eval (Lambda rlargs newEnv lbody) & trace "rlargs"
+          ([], []) -> valuate lbody newEnv
+          (rlargs, []) -> eval (Lambda rlargs newEnv lbody)
           ([], rargs) -> do
             newBody <- valuate lbody newEnv
             eval (Call newBody rargs)
@@ -313,7 +313,6 @@ eval expr =
                 (args & List.reverse)
             let res = fn vargs
             eval res
-    -- eval (fn (List.map (\e -> e e env) args))
     Call fnExpr args ->
       do
         fn <- eval fnExpr
