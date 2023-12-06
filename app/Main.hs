@@ -18,7 +18,7 @@ data Statement = Expression OExpression | Binding Binding
 -- | Expressions evaluate to something tangible
 data OExpression
   = -- concrete value
-    ENumber Int
+    ENum Int
   | EBool Bool
   | IfElse OExpression OExpression OExpression
   | -- Types are first-class values
@@ -29,6 +29,7 @@ data OExpression
     Lambda [String] OEnv OExpression
   | NativeCall String
   | Call OExpression [OExpression]
+  | TypeOf OExpression
   | -- Names
     Let [Binding] OExpression
   | Name String
@@ -36,17 +37,18 @@ data OExpression
   deriving (Eq, Ord)
 
 instance Show OExpression where
-  show (ENumber n) = show n
+  show (ENum n) = show n
   show (EBool b) = show b
   show (IfElse cond trueExpr falseExpr) = "if " ++ show cond ++ " then " ++ show trueExpr ++ " else " ++ show falseExpr
-  show (EType typ) = "[type " ++ show typ ++ "]"
-  show (Let bindings expr) = "let " ++ (List.map show bindings & unwords) ++ " in " ++ show expr
+  show (EType typ) = "[type {" ++ show typ ++ "}]"
+  show (Let bindings expr) = "let " ++ (List.map show bindings & unwords) ++ " in  \x1b[1m" ++ show expr ++ "\x1b[22m"
   show (Name n) = n
   show (RuntimeError e) = "RuntimeError: " ++ e
   show (NativeCall name) = "[Native fn `" ++ name ++ "`]"
   show (Call fn args) = "(" ++ show fn ++ " " ++ (List.map show args & unwords) ++ ")"
   show (Lambda args _ body) = "(\\" ++ unwords args ++ " -> " ++ show body ++ ")"
   show (Quote expr) = "quote(" ++ show expr ++ ")"
+  show (TypeOf expr) = "typeof(" ++ show expr ++ ")"
 
 -- | Bindings only modify the environment
 data Binding
@@ -61,13 +63,12 @@ instance Show Binding where
 data OType
   = TNum
   | TBool
-  | Tif OExpression OType OType
-  | TFunction [OType] OType
-  | TApply OType [OType]
+  | -- | TFunction [OType] OType
+    TApply OType [OType]
   | TType -- is of type: Type
   | TAny -- can litarally be anything
-  | AnyOf OType OType
-  | AllOf OType OType
+  | AnyOf [OType]
+  | AllOf [OType]
   | TVar String
   | TQuote
   | TypeError String
@@ -94,15 +95,25 @@ instance Show OEnv where
 
 makeOakVersion :: (a -> OExpression) -> OType -> String -> (Int -> Int -> a) -> (String, ([OExpression] -> OExpression, OType))
 makeOakVersion toExpr typ name fn =
-  let builtinFn [ENumber a, ENumber b] = toExpr (fn a b)
+  let builtinFn [ENum a, ENum b] = toExpr (fn a b)
       builtinFn exprs = (error $ "Expected two numbers for " ++ name ++ ", got " ++ show exprs)
-   in (name, (builtinFn, TFunction [TNum, TNum] typ))
+
+      (lambdaEnv, _) =
+        compute
+          _emptyEnv
+          ( do
+              evalBinding (BindType (Name "x") TNum)
+              evalBinding (BindType (Name "y") TNum)
+          )
+
+      typL = TExpression (Lambda ["x", "y"] _emptyEnv (EType typ))
+   in (name, (builtinFn, typL))
 
 nativeFns :: [(String, ([OExpression] -> OExpression, OType))]
 nativeFns =
-  [ makeOakVersion ENumber TNum "+" (+),
-    makeOakVersion ENumber TNum "-" (-),
-    makeOakVersion ENumber TNum "*" (*),
+  [ makeOakVersion ENum TNum "+" (+),
+    makeOakVersion ENum TNum "-" (-),
+    makeOakVersion ENum TNum "*" (*),
     makeOakVersion EBool TBool "<" (<),
     makeOakVersion EBool TBool ">" (>),
     makeOakVersion EBool TBool ">=" (>=),
@@ -147,6 +158,10 @@ exitEnvToParent :: Computation ()
 exitEnvToParent =
   Computation (\(Env _ _ mParent) -> (mParent & Maybe.fromJust, ()))
 
+currentEnv :: Computation OEnv
+currentEnv =
+  Computation (\env -> (env, env))
+
 inExistingParent :: Computation a -> Computation a
 inExistingParent computation =
   Computation
@@ -172,7 +187,7 @@ child `setParent` parent =
 inferDirectType :: OExpression -> Computation OType
 inferDirectType expression =
   ( case expression & debugPipe "--- inferType start" of
-      ENumber _ -> return TNum
+      ENum _ -> return TNum
       EBool _ -> return TBool
       IfElse cond trueExpr falseExpr ->
         do
@@ -183,7 +198,7 @@ inferDirectType expression =
           falseType <- inferDirectType falseExpr
           condType <- inferDirectType cond -- this happens last because of hints we could get from above... ugh
           if condType `isSubset` TBool
-            then simplifyType (Tif cond trueType falseType)
+            then simplifyType $ TExpression (IfElse cond (EType trueType) (EType falseType))
             else return $ TypeError ("conditional expression " ++ show cond ++ " is not a boolean. Got " ++ show condType)
       EType _ -> return TType
       Quote _ -> return TQuote
@@ -191,7 +206,7 @@ inferDirectType expression =
       Name n ->
         do
           mt <- resolveType (Name n)
-          let t = mt & Maybe.fromMaybe (TVar n)
+          let t = mt & Maybe.fromMaybe (TExpression (Name n))
           simplifyType t
       NativeCall n ->
         do
@@ -200,7 +215,7 @@ inferDirectType expression =
       Lambda args _ body ->
         do
           makeChildEnv & trace (" >> inferType going to child env in " ++ show expression)
-          foldM_ (\_ n -> evalBinding (BindType (Name n) (TVar n))) () args
+          foldM_ (\_ n -> evalBinding (BindType (Name n) (TExpression (Name n)))) () args
           bodyType <- inferDirectType body
           argTypes <-
             foldM
@@ -212,8 +227,9 @@ inferDirectType expression =
               )
               []
               (List.reverse args)
+          lenv <- currentEnv
           exitEnvToParent & trace (" << inferType going to parent env in " ++ show expression)
-          simplifyType $ TFunction argTypes bodyType
+          simplifyType $ TExpression (Lambda args lenv (EType bodyType))
       Let [] expr -> inferDirectType expr
       Let ((BindType texpr typ) : bs) expr ->
         do
@@ -228,21 +244,23 @@ inferDirectType expression =
           inferDirectType (Let bs expr)
       Call fn args ->
         do
-          fnType_ <- inferDirectType fn
+          fnType_ <- inferDirectType fn >>= simplifyType
           argTypes_ <- foldM (\ts a -> do t <- inferDirectType a; return (t : ts)) [] args
           let (fnType, argTypes) = (fnType_, argTypes_) & debugPipe "   inferType: (fnType, argType)"
           case fnType of
-            TFunction fnArgTypes _ ->
+            TExpression (Lambda namedArguments lenv _) ->
               do
-                let (argMatches_, _) = zipAll (args, fnArgTypes)
+                let (argMatches_, _) = zipAll (args, namedArguments)
                 let argMatches = argMatches_ & debugPipe "   inferType: argMatches "
                 foldM_
-                  ( \_ (a, t) -> do
+                  ( \_ (argValue, argName) -> do
                       let b =
-                            a
+                            argValue
                               & debugPipe
-                                ("   inferType, in " ++ show expression ++ " restricting " ++ show a ++ " with " ++ show t)
-                      addTypeRestrictionToExistingName b t
+                                ("   inferType, in " ++ show expression ++ " restricting " ++ show argValue ++ " with " ++ show argName)
+                      mArgType <- resolveType (Name argName)
+                      let argType = mArgType & Maybe.fromMaybe (TVar argName)
+                      addTypeRestrictionToExistingName b argType
                   )
                   ()
                   argMatches
@@ -252,7 +270,45 @@ inferDirectType expression =
           let rawType = TApply (fnType & debugPipe "inferType: fnType") (argTypes & debugPipe "inferType: argTypes")
           simplifyType rawType
   )
-    & fmap (debugPipe ("\n=== inferType of " ++ show expression))
+    & fmap (debugPipe ("\n=== inferType of " ++ show expression ++ "\n  "))
+
+evalType :: OExpression -> Computation OExpression
+evalType expr =
+  ( case expr & debugPipe "--- evalType of" of
+      ENum _ -> return $ EType TNum
+      EBool _ -> return $ EType TBool
+      Name n ->
+        do
+          mType <- resolveType (Name n)
+          case mType of
+            Just typ -> return $ EType typ
+            Nothing ->
+              do
+                mExpr <- resolveName n
+                case mExpr of
+                  Just expr -> evalType expr
+                  _ -> return $ RuntimeError $ "Can't resolve name " ++ n
+      Let bindings e ->
+        eval (Let bindings (TypeOf e))
+      NativeCall n ->
+        do
+          t <- resolveType (NativeCall n) & trace "resolveType native"
+          evalType $ EType (t & Maybe.fromJust) -- TODO: this is hacky
+      EType (TExpression expr) ->
+        eval expr
+      Call fn args ->
+        do
+          fnType <- evalType fn
+          argTypes <- foldM (\ts a -> do t <- evalType a; return (t : ts)) [] (List.reverse args)
+          eval (Call fnType args) -- argTypes)
+      Lambda argNames lenv lbody ->
+        eval (Lambda argNames lenv (TypeOf lbody))
+      IfElse cond trueExpr falseExpr ->
+        eval (IfElse cond (TypeOf trueExpr) (TypeOf falseExpr))
+      EType t -> return $ EType TType
+      _ -> return $ RuntimeError "unimplemented evalType"
+  )
+    & fmap (debugPipe ("=== evalType of " ++ show expr))
 
 -- TAny `isSubset` t = True
 isSubset :: OType -> OType -> Bool
@@ -261,46 +317,65 @@ t `isSubset` (TVar _) = True
 (TVar _) `isSubset` t = True
 -- t `isSubset` (TApply (TVar _) _) = True
 (TApply (TVar _) _) `isSubset` t = True
+t `isSubset` (AllOf allTypes) = List.all (\a -> t `isSubset` a) allTypes
+(AllOf alltypes) `isSubset` t = List.any (\a -> a `isSubset` t) alltypes
+t `isSubset` (AnyOf anyTypes) = List.any (\a -> t `isSubset` a) anyTypes
+(AnyOf anyTypes) `isSubset` t = List.all (\a -> a `isSubset` t) anyTypes
 t `isSubset` u = t == u
 
 simplifyType :: OType -> Computation OType
 simplifyType typ =
   case typ of
-    Tif cond trueType falseType ->
+    TExpression (IfElse cond (EType trueType) (EType falseType)) ->
       do
         simpleTrue <- simplifyType trueType
         simpleFalse <- simplifyType falseType
         if simpleTrue == simpleFalse
           then return simpleTrue
-          else return $ Tif cond simpleTrue simpleFalse
-    TApply (TFunction [] retType) [] ->
-      simplifyType retType
-    TApply TAny retType ->
+          else return typ
+    -- TApply (TExpression (Lambda [] _ retType)) [] ->
+    --   simplifyType retType
+    TExpression (EType t) ->
+      return t
+    TApply (TExpression (Lambda argNames lenv (EType (TExpression expr)))) argVals ->
+      do
+        ret <- eval (Call (Lambda argNames lenv expr) (argVals & List.map EType))
+        return (TExpression ret)
+    TApply TAny _ ->
       return TAny
+    AllOf types ->
+      let allTypes =
+            List.concatMap
+              ( \t -> case t of
+                  AllOf subTs -> subTs
+                  _ -> [t]
+              )
+              types
+       in return $ AllOf (List.nub allTypes)
     TVar name ->
       do
         realType <- resolveType (Name name)
         return (realType & Maybe.fromMaybe typ)
-    TApply (TFunction (fnArgType : argTypes) retType) (callArgType : callTypes) ->
-      do
-        fnSimple <- simplifyType fnArgType
-        argSimple <- simplifyType callArgType
-        if argSimple `isSubset` fnSimple
-          then simplifyType $ TApply (TFunction argTypes retType) callTypes
-          else
-            return $
-              TypeError ("provided argument is of type " ++ show argSimple ++ " not a subset of expected type " ++ show fnSimple)
-                & debugPipe ("simplifyType. In " ++ show typ ++ ", " ++ show argSimple ++ " is not subset of " ++ show fnSimple)
-    AllOf t1_ t2_ ->
-      do
-        t1 <- simplifyType t1_
-        t2 <- simplifyType t2_
-        if t1 `isSubset` t2
-          then return t1
-          else
-            if t2 `isSubset` t1
-              then return t2
-              else return typ
+    -- TApply (TExpression (Lambda (fnArgType : argTypes) _ retType)) (callArgType : callTypes) ->
+    --   do
+    --     fnSimple <- simplifyType fnArgType
+    --     argSimple <- simplifyType callArgType
+    --     if argSimple `isSubset` fnSimple
+    --       then simplifyType $ TApply (TFunction argTypes retType) callTypes
+    --       else
+    --         return $
+    --           TypeError ("provided argument is of type " ++ show argSimple ++ " not a subset of expected type " ++ show fnSimple)
+    --             & debugPipe ("simplifyType. In " ++ show typ ++ ", " ++ show argSimple ++ " is not subset of " ++ show fnSimple)
+    -- AllOf (t1_ : (t2_ : ts)) ->
+    --   do
+    --     t1 <- simplifyType t1_
+    --     t2 <- simplifyType t2_
+    --     if t1 `isSubset` t2
+    --       then return $ AllOf (t1 : ts)
+    --       else
+    --         if t2 `isSubset` t1
+    --           then return $ AllOf (t2 : ts)
+    --           else return typ
     _ -> return typ
 
 -- checkType :: OType -> OExpression -> OEnv -> Bool
@@ -344,51 +419,59 @@ valuate expr env =
 
 eval :: OExpression -> Computation OExpression
 eval expr =
-  case expr of
-    IfElse condExpr trueExpr falseExpr ->
-      do
-        condValue <- eval condExpr
-        case condValue of
-          (EBool True) -> eval trueExpr
-          (EBool False) -> eval falseExpr
-          _ -> return (RuntimeError (show condValue ++ " isn't a boolean"))
-    Name n ->
-      do
-        mRes <- resolveAndEval n
-        let res = mRes & Maybe.fromMaybe (RuntimeError ("Can't resolve name " ++ n))
-        return res
-    Lambda args _ body -> Computation (\env -> (env, Lambda args env body)) -- todo verify all names bound
-    Let bindings expr ->
-      do
-        foldM_ (const evalBinding) () bindings
-        eval expr
-    Call (Lambda largs lenv lbody) args ->
-      do
-        let (bindings, (rlargs, rargs)) = zipAll (largs, args)
-        values <- foldM (\res (n, a) -> do arg <- eval a; return $ (n, arg) : res) [] (bindings & List.reverse)
-        let (newEnv, _) =
-              compute
-                (makeChildEnvOf lenv)
-                (foldM_ (\_ (n, x) -> evalBinding (BindValue n x)) () values)
-        case (rlargs, rargs) of
-          ([], []) -> valuate lbody newEnv
-          (rlargs, []) -> eval (Lambda rlargs newEnv lbody)
-          ([], rargs) -> do
-            newBody <- valuate lbody newEnv
-            eval (Call newBody rargs)
-    Call (NativeCall name) args ->
-      let (fn, _) = Map.lookup name nativeCalls & Maybe.fromJust
-       in do
-            -- TODO why does this flip?
-            vargs <- foldlM (\res a -> do arg <- eval a; return $ arg : res) [] (args & List.reverse)
-            let res = fn vargs
-            eval res
-    Call fnExpr args ->
-      do
-        fn <- eval fnExpr
-        eval (Call fn args)
-    RuntimeError e -> error (show expr)
-    _ -> return expr
+  ( case expr & debugPipe "--- eval" of
+      IfElse condExpr trueExpr falseExpr ->
+        do
+          condValue <- eval condExpr
+          case condValue of
+            (EBool True) -> eval trueExpr
+            (EBool False) -> eval falseExpr
+            _ -> return (RuntimeError (show condValue ++ " isn't a boolean"))
+      Name n ->
+        do
+          mRes <- resolveAndEval n
+          let res = mRes & Maybe.fromMaybe (RuntimeError ("Can't resolve name " ++ n))
+          return res
+      Lambda args _ body -> Computation (\env -> (env, Lambda args env body)) -- todo verify all names bound
+      Let bindings expr ->
+        do
+          foldM_ (const evalBinding) () bindings
+          eval expr
+      Call (Lambda largs lenv lbody) args ->
+        do
+          let (bindings, (rlargs, rargs)) = zipAll (largs, args)
+          values <- foldM (\res (n, a) -> do arg <- eval a; return $ (n, arg) : res) [] (bindings & List.reverse)
+          let (newEnv, _) =
+                compute
+                  (makeChildEnvOf lenv)
+                  (foldM_ (\_ (n, x) -> evalBinding (BindValue n x)) () values)
+          case (rlargs, rargs) of
+            ([], []) -> valuate lbody newEnv
+            (rlargs, []) -> eval (Lambda rlargs newEnv lbody)
+            ([], rargs) -> do
+              newBody <- valuate lbody newEnv
+              eval (Call newBody rargs)
+      Call (NativeCall name) args ->
+        let (fn, _) = Map.lookup name nativeCalls & Maybe.fromJust
+         in do
+              -- TODO why does this flip?
+              vargs <- foldlM (\res a -> do arg <- eval a; return $ arg : res) [] (args & List.reverse)
+              let res = fn vargs
+              eval res
+      Call fnExpr args ->
+        do
+          fn <- eval fnExpr
+          eval (Call fn args)
+      RuntimeError e -> error (show expr)
+      TypeOf e ->
+        do
+          mt <- resolveType expr
+          case mt of
+            Just t -> return $ EType t
+            _ -> evalType e
+      _ -> return expr
+  )
+    & fmap (debugPipe ("=== eval of " ++ show expr))
 
 hasBinding :: String -> OEnv -> Bool
 hasBinding name (Env bindingMap _ parentEnv) =
@@ -468,7 +551,7 @@ evalBinding bind =
               else (Env (bindings & Map.insert name expr) tBindings maybeParent, ())
           BindType name typ ->
             let newType = case Map.lookup name tBindings of
-                  Just existingType -> compute env (simplifyType (AllOf typ existingType)) & snd
+                  Just existingType -> compute env (simplifyType (AllOf [typ, existingType])) & snd
                   Nothing -> typ
              in (Env bindings (tBindings & Map.insert name newType) maybeParent, ())
     )
@@ -497,7 +580,7 @@ set :: String -> OExpression -> Binding
 set = BindValue
 
 num :: Int -> OExpression
-num = ENumber
+num = ENum
 
 n :: String -> OExpression
 n = Name
@@ -519,9 +602,11 @@ main =
   let expr =
         Let
           [ set "x" (num 3),
-            set "y" (calln "+" ["x", "x"]),
+            -- set "y" (calln "+" ["x", "x"]),
+            set "y" (call "add" ["x", "x"]),
             set "add" (lambda ["x", "y"] (Call (nn "+") [n "x", n "y"])),
             set "id" (lambda ["x"] (n "x")),
+            set "omega" (lambda ["x"] (call "x" ["x"])),
             set
               "fact"
               ( lambda
@@ -534,24 +619,34 @@ main =
                   )
               )
           ]
+          -- (NativeCall "+")
+          -- (Call (NativeCall "+") [Name "x"])
           -- (Call (NativeCall "+") [Name "x", Name "y"])
           -- (Name "y")
           -- (num 2)
           -- (call "fact" ["y"])
           -- (call "add" ["y", "y"])
-          -- (Call (call "id" ["id"]) [num 3])
+          -- (n "id")
+          -- (Call (n "id") [num 3])
+          -- (call "id" ["id"])
           -- (Call (Call (n "id") [n "id"]) [num 3])
-          (n "fact")
+          -- (Call (n "fact") [num 20])
+          (n "omega")
+      -- (call "omega" ["omega"])
+      -- (Call (n "fact") [num (-2)])
+      -- (n "fact")
 
       _ = 0
    in do
         putStrLn ("> \x1b[1m" ++ show expr ++ "\x1b[22m")
-        let (_, res) = compute defaultEnv (eval expr)
-        putStrLn ("  = " ++ show res)
+        -- let (_, res) = compute defaultEnv (eval expr)
+        -- putStrLn ("  = " ++ show res)
         putStrLn ""
 
         putStrLn "================"
-        let (_, exprType) = compute defaultEnv (inferDirectType expr >>= simplifyType)
-        putStrLn (" := " ++ show exprType)
+        -- let (_, exprType) = compute defaultEnv (inferDirectType expr >>= simplifyType)
+        -- putStrLn (" := \x1b[1m" ++ show exprType ++ "\x1b[22m")
+        let (_, exprType) = compute defaultEnv (evalType expr)
+        putStrLn (" := \x1b[1m" ++ show exprType ++ "\x1b[22m")
         putStrLn ""
         putStrLn "done"
