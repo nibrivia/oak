@@ -68,8 +68,9 @@ data OType
   | TAny -- can litarally be anything
   | AnyOf OType OType
   | AllOf OType OType
+  | TVar String
   | TQuote
-  | TypeError
+  | TypeError String
   | TExpression OExpression
   deriving (Show, Eq, Ord)
 
@@ -175,19 +176,23 @@ inferDirectType expression =
       EBool _ -> return TBool
       IfElse cond trueExpr falseExpr ->
         do
-          condType <- inferDirectType cond
+          inferDirectType cond -- this happens last because of hints we could get from above... ugh
+          inferDirectType trueExpr
+          inferDirectType falseExpr
           trueType <- inferDirectType trueExpr
           falseType <- inferDirectType falseExpr
-          if condType `isSubset` TBool && trueType == falseType
-            then return $ Tif cond trueType falseType & simplifyType
-            else return TypeError
+          condType <- inferDirectType cond -- this happens last because of hints we could get from above... ugh
+          if condType `isSubset` TBool
+            then simplifyType (Tif cond trueType falseType)
+            else return $ TypeError ("conditional expression " ++ show cond ++ " is not a boolean. Got " ++ show condType)
       EType _ -> return TType
       Quote _ -> return TQuote
       RuntimeError _ -> return TAny
       Name n ->
         do
-          t <- resolveType (Name n)
-          return $ t & Maybe.fromMaybe TAny
+          mt <- resolveType (Name n)
+          let t = mt & Maybe.fromMaybe (TVar n)
+          simplifyType t
       NativeCall n ->
         do
           t <- resolveType (Name n)
@@ -195,19 +200,20 @@ inferDirectType expression =
       Lambda args _ body ->
         do
           makeChildEnv & trace (" >> inferType going to child env in " ++ show expression)
-          foldM_ (\_ n -> evalBinding (BindType (Name n) TAny)) () args
+          foldM_ (\_ n -> evalBinding (BindType (Name n) (TVar n))) () args
           bodyType <- inferDirectType body
           argTypes <-
             foldM
               ( \ts a ->
                   do
                     t <- resolveType (Name a)
-                    return ((t & Maybe.fromJust & simplifyType) : ts)
+                    simpleT <- simplifyType (t & Maybe.fromJust)
+                    return (simpleT : ts)
               )
               []
               (List.reverse args)
           exitEnvToParent & trace (" << inferType going to parent env in " ++ show expression)
-          return $ TFunction argTypes bodyType
+          simplifyType $ TFunction argTypes bodyType
       Let [] expr -> inferDirectType expr
       Let ((BindType texpr typ) : bs) expr ->
         do
@@ -243,43 +249,59 @@ inferDirectType expression =
             _ ->
               return (() & debugPipe ("   fnType " ++ show fnType ++ " argTypes " ++ show argTypes))
 
-          return (TApply (fnType & debugPipe "inferType: fnType") (argTypes & debugPipe "inferType: argTypes") & simplifyType)
+          let rawType = TApply (fnType & debugPipe "inferType: fnType") (argTypes & debugPipe "inferType: argTypes")
+          simplifyType rawType
   )
     & fmap (debugPipe ("\n=== inferType of " ++ show expression))
 
 -- TAny `isSubset` t = True
+isSubset :: OType -> OType -> Bool
 t `isSubset` TAny = True
+t `isSubset` (TVar _) = True
+(TVar _) `isSubset` t = True
+-- t `isSubset` (TApply (TVar _) _) = True
+(TApply (TVar _) _) `isSubset` t = True
 t `isSubset` u = t == u
 
-simplifyType :: OType -> OType
+simplifyType :: OType -> Computation OType
 simplifyType typ =
   case typ of
     Tif cond trueType falseType ->
-      let simpleTrue = simplifyType trueType
-          simpleFalse = simplifyType falseType
-       in if simpleTrue == simpleFalse
-            then simpleTrue
-            else Tif cond simpleTrue simpleFalse
+      do
+        simpleTrue <- simplifyType trueType
+        simpleFalse <- simplifyType falseType
+        if simpleTrue == simpleFalse
+          then return simpleTrue
+          else return $ Tif cond simpleTrue simpleFalse
     TApply (TFunction [] retType) [] ->
       simplifyType retType
     TApply TAny retType ->
-      TAny
+      return TAny
+    TVar name ->
+      do
+        realType <- resolveType (Name name)
+        return (realType & Maybe.fromMaybe typ)
     TApply (TFunction (fnArgType : argTypes) retType) (callArgType : callTypes) ->
-      let fnSimpl = simplifyType fnArgType
-          argSimple = simplifyType callArgType
-       in if fnSimpl `isSubset` argSimple
-            then simplifyType $ TApply (TFunction argTypes retType) callTypes
-            else TypeError & debugPipe ("simplifyType. In " ++ show typ ++ ", " ++ show fnSimpl ++ " is not subset of " ++ show argSimple)
+      do
+        fnSimple <- simplifyType fnArgType
+        argSimple <- simplifyType callArgType
+        if argSimple `isSubset` fnSimple
+          then simplifyType $ TApply (TFunction argTypes retType) callTypes
+          else
+            return $
+              TypeError ("provided argument is of type " ++ show argSimple ++ " not a subset of expected type " ++ show fnSimple)
+                & debugPipe ("simplifyType. In " ++ show typ ++ ", " ++ show argSimple ++ " is not subset of " ++ show fnSimple)
     AllOf t1_ t2_ ->
-      let t1 = simplifyType t1_
-          t2 = simplifyType t2_
-       in if t1 `isSubset` t2
-            then t1
-            else
-              if t2 `isSubset` t1
-                then t2
-                else typ
-    _ -> typ
+      do
+        t1 <- simplifyType t1_
+        t2 <- simplifyType t2_
+        if t1 `isSubset` t2
+          then return t1
+          else
+            if t2 `isSubset` t1
+              then return t2
+              else return typ
+    _ -> return typ
 
 -- checkType :: OType -> OExpression -> OEnv -> Bool
 -- checkType otype expression env =
@@ -372,9 +394,18 @@ hasBinding :: String -> OEnv -> Bool
 hasBinding name (Env bindingMap _ parentEnv) =
   Map.member name bindingMap || maybe False (hasBinding name) parentEnv
 
-hasTypeBinding :: String -> OEnv -> Bool
-hasTypeBinding name (Env bindingMap _ parentEnv) =
-  Map.member name bindingMap || maybe False (hasBinding name) parentEnv
+hasTypeBinding :: OExpression -> Computation Bool
+hasTypeBinding expr =
+  Computation
+    ( \env@(Env _ tBindings parentEnv) ->
+        if Map.member expr tBindings
+          then (env, True)
+          else case parentEnv of
+            Nothing -> (env, False)
+            Just pEnv ->
+              let (_, hasT) = compute pEnv (hasTypeBinding expr)
+               in (env, hasT)
+    )
 
 orElse :: Maybe a -> Maybe a -> Maybe a
 orElse _ a@(Just _) = a
@@ -429,7 +460,7 @@ resolveAndEval name =
 evalBinding :: Binding -> Computation ()
 evalBinding bind =
   Computation
-    ( \(Env bindings tBindings maybeParent) ->
+    ( \env@(Env bindings tBindings maybeParent) ->
         case bind of
           BindValue name expr ->
             if Map.member name bindings
@@ -437,7 +468,7 @@ evalBinding bind =
               else (Env (bindings & Map.insert name expr) tBindings maybeParent, ())
           BindType name typ ->
             let newType = case Map.lookup name tBindings of
-                  Just existingType -> AllOf typ existingType
+                  Just existingType -> compute env (simplifyType (AllOf typ existingType)) & snd
                   Nothing -> typ
              in (Env bindings (tBindings & Map.insert name newType) maybeParent, ())
     )
@@ -497,7 +528,8 @@ main =
                   ["x"]
                   ( IfElse
                       (Call (nn "<=") [n "x", num 1])
-                      (num 1)
+                      (IfElse (Call (nn "<=") [n "x", num 0]) (EBool False) (num 1))
+                      -- (num 1)
                       (Call (nn "*") [n "x", Call (n "fact") [Call (nn "-") [n "x", num 1]]])
                   )
               )
@@ -507,8 +539,9 @@ main =
           -- (num 2)
           -- (call "fact" ["y"])
           -- (call "add" ["y", "y"])
-          -- (n "fact")
-          (n "id")
+          -- (Call (call "id" ["id"]) [num 3])
+          -- (Call (Call (n "id") [n "id"]) [num 3])
+          (n "fact")
 
       _ = 0
    in do
@@ -518,7 +551,7 @@ main =
         putStrLn ""
 
         putStrLn "================"
-        let (_, exprType) = compute defaultEnv (inferDirectType expr)
-        putStrLn (" := " ++ show (exprType & simplifyType))
+        let (_, exprType) = compute defaultEnv (inferDirectType expr >>= simplifyType)
+        putStrLn (" := " ++ show exprType)
         putStrLn ""
         putStrLn "done"
