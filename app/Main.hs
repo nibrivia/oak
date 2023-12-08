@@ -25,6 +25,7 @@ data OExpression
     EType OType
   | -- Expression captures
     Quote OExpression
+  | Equal OExpression OExpression
   | -- Functions
     Lambda [String] OEnv OExpression
   | NativeCall String
@@ -49,6 +50,7 @@ instance Show OExpression where
   show (Lambda args _ body) = "(\\" ++ unwords args ++ " -> " ++ show body ++ ")"
   show (Quote expr) = "quote(" ++ show expr ++ ")"
   show (TypeOf expr) = "typeof(" ++ show expr ++ ")"
+  show (Equal a b) = "(" ++ show a ++ " == " ++ show b ++ ")"
 
 -- | Bindings only modify the environment
 data Binding
@@ -300,15 +302,38 @@ evalType expr =
         do
           fnType <- evalType fn
           argTypes <- foldM (\ts a -> do t <- evalType a; return (t : ts)) [] (List.reverse args)
-          eval (Call fnType args) -- argTypes)
+          let callType = Call fnType args
+          let withGuards =  addTypeRestriction (fnType, EType TAny) callType
+          eval withGuards
       Lambda argNames lenv lbody ->
         eval (Lambda argNames lenv (TypeOf lbody))
       IfElse cond trueExpr falseExpr ->
-        eval (IfElse cond (TypeOf trueExpr) (TypeOf falseExpr))
+        do
+          condType <- evalType cond
+          let typeExpr = IfElse cond (TypeOf trueExpr) (TypeOf falseExpr)
+          eval $ addTypeRestriction (cond, EType TBool) typeExpr
       EType t -> return $ EType TType
       _ -> return $ RuntimeError "unimplemented evalType"
   )
     & fmap (debugPipe ("=== evalType of " ++ show expr))
+
+addTypeRestriction :: (OExpression, OExpression) -> OExpression -> OExpression
+addTypeRestriction (typedExpr, exprType) retExpr =
+  IfElse
+    (Equal exprType (TypeOf typedExpr))
+    retExpr
+    (EType (TypeError $ "TypeError, expected " ++ show exprType ++ " but got " ++ show typedExpr))
+
+evalEqual :: OExpression -> OExpression -> Computation Bool
+evalEqual (EType TAny) (EType _) = return True
+evalEqual (EType _) (EType TAny) = return True
+evalEqual exprA exprB =
+  if exprA == exprB
+    then return True
+    else do
+      a <- eval exprA
+      b <- eval exprA
+      return $ a == b
 
 -- TAny `isSubset` t = True
 isSubset :: OType -> OType -> Bool
@@ -463,6 +488,10 @@ eval expr =
           fn <- eval fnExpr
           eval (Call fn args)
       RuntimeError e -> error (show expr)
+      Equal a b ->
+        do
+          isEqual <- evalEqual a b
+          return $ EBool isEqual
       TypeOf e ->
         do
           mt <- resolveType expr
@@ -613,7 +642,8 @@ main =
                   ["x"]
                   ( IfElse
                       (Call (nn "<=") [n "x", num 1])
-                      (IfElse (Call (nn "<=") [n "x", num 0]) (EBool False) (num 1))
+                      (EBool False)
+                      -- (IfElse (Call (nn "<=") [n "x", num 0]) (EBool False) (num 1))
                       -- (num 1)
                       (Call (nn "*") [n "x", Call (n "fact") [Call (nn "-") [n "x", num 1]]])
                   )
@@ -631,14 +661,17 @@ main =
           -- (call "id" ["id"])
           -- (Call (Call (n "id") [n "id"]) [num 3])
           -- (Call (n "fact") [num 20])
-          (n "omega")
-      -- (call "omega" ["omega"])
-      -- (Call (n "fact") [num (-2)])
-      -- (n "fact")
+          -- (n "omega")
+          -- (call "omega" ["omega"])
+          -- (Call (n "fact") [num (-2)])
+          (Call (n "fact") [EBool True])
+          -- (n "fact")
 
       _ = 0
    in do
         putStrLn ("> \x1b[1m" ++ show expr ++ "\x1b[22m")
+        -- let (_, exprType) = compute defaultEnv (evalType expr)
+        -- putStrLn (" := \x1b[1m" ++ show exprType ++ "\x1b[22m")
         -- let (_, res) = compute defaultEnv (eval expr)
         -- putStrLn ("  = " ++ show res)
         putStrLn ""
